@@ -4,6 +4,14 @@ import { redirect } from "next/navigation";
 
 import { createAdminClient, type AdminClient } from "@/lib/database/admin";
 import { createUserClient } from "@/lib/database/user";
+import { hasPasscodeSession } from "@/server/passcode";
+
+export class DatabaseNotReady extends Error {
+  constructor(message = "Database tables are not ready.") {
+    super(message);
+    this.name = "DatabaseNotReady";
+  }
+}
 
 export type WorkspaceContext = {
   admin: AdminClient;
@@ -39,22 +47,48 @@ type WorkspaceRow = {
 export async function requireWorkspace(): Promise<WorkspaceContext> {
   const supabase = await createUserClient();
   const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) redirect("/login");
-  const profileResult = await supabase
-    .from("profiles")
-    .select("id, full_name, email, workspace_id")
-    .eq("id", data.user.id)
-    .single();
-  const profile = profileResult.data as ProfileRow | null;
-  if (!profile) redirect("/login");
-  const workspaceResult = await supabase.from("workspaces").select("*").eq("id", profile.workspace_id).single();
-  const workspace = workspaceResult.data as WorkspaceRow | null;
-  if (!workspace) redirect("/login");
+  if (!error && data.user) {
+    await ensureOwnerWorkspace(data.user);
+    const profileResult = await supabase
+      .from("profiles")
+      .select("id, full_name, email, workspace_id")
+      .eq("id", data.user.id)
+      .single();
+    const profile = profileResult.data as ProfileRow | null;
+    if (profile) {
+      const workspaceResult = await supabase.from("workspaces").select("*").eq("id", profile.workspace_id).single();
+      const workspace = workspaceResult.data as WorkspaceRow | null;
+      if (workspace) return workspaceContext(createAdminClient(), data.user.id, profile, workspace);
+    }
+  }
+  if (!(await hasPasscodeSession())) redirect("/login");
+  return passcodeWorkspace();
+}
+
+async function passcodeWorkspace(): Promise<WorkspaceContext> {
+  const admin = createAdminClient();
+  const found = await admin.from("workspaces").select("*").order("created_at", { ascending: true }).limit(1).maybeSingle();
+  if (found.error) throw new DatabaseNotReady(found.error.message);
+  let workspace = found.data as WorkspaceRow | null;
+  if (!workspace) {
+    const inserted = await admin.from("workspaces").insert({ name: "Team Arora" }).select("*").single();
+    if (inserted.error || !inserted.data) throw new DatabaseNotReady(inserted.error?.message ?? "The workspace could not be created.");
+    workspace = inserted.data as WorkspaceRow;
+  }
+  return workspaceContext(admin, workspace.id, { id: workspace.id, full_name: "Team Arora", email: null, workspace_id: workspace.id }, workspace);
+}
+
+function workspaceContext(
+  admin: AdminClient,
+  userId: string,
+  profile: ProfileRow,
+  workspace: WorkspaceRow,
+): WorkspaceContext {
   return {
-    admin: createAdminClient(),
-    userId: data.user.id,
-    email: profile.email ?? data.user.email ?? "",
-    fullName: profile.full_name ?? "Administrator",
+    admin,
+    userId,
+    email: profile.email ?? "",
+    fullName: profile.full_name ?? "Team Arora",
     workspaceId: workspace.id,
     workspaceName: workspace.name,
     timezone: workspace.timezone,
@@ -87,6 +121,33 @@ export async function recordActivity(
     summary: input.summary,
     metadata,
   });
+}
+
+async function ensureOwnerWorkspace(user: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
+  const admin = createAdminClient();
+  const existing = await admin.from("profiles").select("id").eq("id", user.id).maybeSingle();
+  if (existing.data || existing.error) return;
+  const metadata = user.user_metadata ?? {};
+  const workspaceName = textValue(metadata.workspace_name) || "Team Arora";
+  const fullName = textValue(metadata.full_name) || user.email?.split("@")[0] || "Administrator";
+  const workspace = await admin.from("workspaces").insert({ name: workspaceName }).select("id").single();
+  const workspaceId = (workspace.data as { id: string } | null)?.id;
+  if (!workspaceId) return;
+  await admin.from("profiles").insert({
+    id: user.id,
+    workspace_id: workspaceId,
+    full_name: fullName,
+    email: user.email ?? null,
+  });
+  await admin.from("workspace_members").insert({
+    workspace_id: workspaceId,
+    user_id: user.id,
+    role: "owner",
+  });
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 function sanitize(value: Record<string, unknown>): Record<string, unknown> {

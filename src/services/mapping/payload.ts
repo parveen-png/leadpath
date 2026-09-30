@@ -93,6 +93,7 @@ export function buildFubPayload(input: {
   const previewItems: { label: string; value: string }[] = [];
   const warnings: string[] = [];
   const background: string[] = [];
+  const mappedTags: string[] = [];
   const campaign: { source?: string; campaign?: string; content?: string; term?: string } = {};
 
   const write = (field: DestinationField, rawValue: string) => {
@@ -162,6 +163,9 @@ export function buildFubPayload(input: {
         break;
       case "event.source":
         payload.source = value;
+        break;
+      case "tags":
+        mappedTags.push(value);
         break;
       case "event.message":
         payload.message = value;
@@ -273,7 +277,7 @@ export function buildFubPayload(input: {
     warnings.push("This lead has no name, email, or phone mapped. Follow Up Boss may not be able to identify the contact.");
   }
 
-  const tags = collectTags({ tags: input.tags, rules: input.rules, values: input.values });
+  const tags = [...new Set([...mappedTags, ...collectTags({ tags: input.tags, rules: input.rules, values: input.values })])];
   if (tags.length > 0) previewItems.push({ label: "Tags", value: tags.join(", ") });
 
   return { ok: true, payload, tags, personUpdates, preview: previewItems, warnings };

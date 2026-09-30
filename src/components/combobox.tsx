@@ -23,8 +23,10 @@ export function Combobox({
   const selected = options.find((option) => option.value === value);
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return options.slice(0, 40);
-    return options.filter((option) => `${option.label} ${option.hint ?? ""}`.toLowerCase().includes(needle)).slice(0, 40);
+    const matches = needle
+      ? options.filter((option) => `${option.label} ${option.hint ?? ""}`.toLowerCase().includes(needle))
+      : options;
+    return matches.slice(0, 200);
   }, [options, query]);
 
   return (

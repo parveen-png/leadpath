@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Badge, statusLabel, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { createWorkflow, deleteWorkflow, duplicateWorkflow, setWorkflowStatus } from "@/server/actions/workflows";
+import { createWorkflow, submitDeleteWorkflow, submitDuplicateWorkflow, submitWorkflowStatus } from "@/server/actions/workflows";
 import { workflowCards } from "@/server/queries";
 import { formatRelativeTime } from "@/lib/utils";
 
@@ -50,25 +50,17 @@ export default async function WorkflowsPage() {
                     <div className="flex flex-wrap gap-2">
                       <Link className="text-forest" href={`/workflows/${workflow.id}`}>Edit</Link>
                       <Link className="text-forest" href={`/workflows/${workflow.id}`}>Test</Link>
-                      <form
-                        action={async () => {
-                          await setWorkflowStatus(workflow.id, workflow.status === "active" ? "paused" : "active");
-                        }}
-                      >
+                      <form action={submitWorkflowStatus}>
+                        <input type="hidden" name="id" value={workflow.id} />
+                        <input type="hidden" name="status" value={workflow.status === "active" ? "paused" : "active"} />
                         <button className="text-forest" type="submit">{workflow.status === "active" ? "Pause" : "Turn on"}</button>
                       </form>
-                      <form
-                        action={async () => {
-                          await duplicateWorkflow(workflow.id);
-                        }}
-                      >
+                      <form action={submitDuplicateWorkflow}>
+                        <input type="hidden" name="id" value={workflow.id} />
                         <button className="text-forest" type="submit">Duplicate</button>
                       </form>
-                      <form
-                        action={async () => {
-                          await deleteWorkflow(workflow.id);
-                        }}
-                      >
+                      <form action={submitDeleteWorkflow}>
+                        <input type="hidden" name="id" value={workflow.id} />
                         <button className="text-danger" type="submit">Delete</button>
                       </form>
                       <Link className="text-forest" href={`/leads?workflow=${workflow.id}`}>View Leads</Link>

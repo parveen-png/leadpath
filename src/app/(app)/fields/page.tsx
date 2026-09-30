@@ -7,13 +7,15 @@ export default async function FieldsPage() {
   const [ctx, fields] = await Promise.all([requireWorkspace(), storedFields()]);
   return (
     <FieldBrowser
-      custom={fields.custom.map((field) => ({
-        label: String(field.label ?? ""),
-        api_name: String(field.api_name ?? ""),
-        field_type: String(field.field_type ?? "text"),
-        choices: Array.isArray(field.choices) ? field.choices.map(String) : [],
-        is_recurring: typeof field.is_recurring === "boolean" ? field.is_recurring : null,
-      }))}
+      custom={fields.custom
+        .filter((field) => field.is_custom === true)
+        .map((field) => ({
+          label: String(field.label ?? ""),
+          api_name: String(field.api_name ?? ""),
+          field_type: String(field.field_type ?? "text"),
+          choices: Array.isArray(field.choices) ? field.choices.map(String) : [],
+          is_recurring: typeof field.is_recurring === "boolean" ? field.is_recurring : null,
+        }))}
       syncedAt={fields.syncedAt}
       demo={ctx.demoMode || isDemoModeEnabled()}
     />

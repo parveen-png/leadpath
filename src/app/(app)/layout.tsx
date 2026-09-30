@@ -1,6 +1,6 @@
 import { AppShell } from "@/components/shell";
 import { readServerEnv } from "@/lib/env";
-import { requireWorkspace } from "@/server/session";
+import { DatabaseNotReady, requireWorkspace } from "@/server/session";
 
 export const dynamic = "force-dynamic";
 
@@ -14,10 +14,20 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </main>
     );
   }
-  const ctx = await requireWorkspace();
-  return (
-    <AppShell name={ctx.fullName} email={ctx.email} workspace={ctx.workspaceName}>
-      {children}
-    </AppShell>
-  );
+  try {
+    const ctx = await requireWorkspace();
+    return (
+      <AppShell name={ctx.fullName} email={ctx.email} workspace={ctx.workspaceName}>
+        {children}
+      </AppShell>
+    );
+  } catch (error) {
+    if (!(error instanceof DatabaseNotReady)) throw error;
+    return (
+      <AppShell name="Team Arora" email="" workspace="Team Arora">
+        <h1 className="font-serif text-4xl">Database not ready</h1>
+        <p className="mt-4 max-w-xl text-sm leading-6 text-muted">{error.message}</p>
+      </AppShell>
+    );
+  }
 }

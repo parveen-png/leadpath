@@ -235,6 +235,25 @@ export async function deleteWorkflow(id: string) {
   redirect("/workflows");
 }
 
+export async function submitWorkflowStatus(formData: FormData) {
+  const id = String(formData.get("id") ?? "");
+  const status = String(formData.get("status") ?? "");
+  if (status !== "active" && status !== "paused" && status !== "draft") return;
+  await setWorkflowStatus(id, status);
+}
+
+export async function submitDuplicateWorkflow(formData: FormData) {
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  await duplicateWorkflow(id);
+}
+
+export async function submitDeleteWorkflow(formData: FormData) {
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  await deleteWorkflow(id);
+}
+
 export async function listPageChoices() {
   const ctx = await requireWorkspace();
   const result = await ctx.admin.from("meta_pages").select("page_id, name, is_demo").eq("workspace_id", ctx.workspaceId).order("name");

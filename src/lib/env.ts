@@ -76,8 +76,16 @@ export function getServerEnv(): ServerEnv {
       `Missing or invalid environment variables: ${missing.join(", ")}. Copy .env.example to .env.local and fill in the required values.`,
     );
   }
-  cached = parsed.data;
-  return parsed.data;
+  cached = { ...parsed.data, SUPABASE_URL: supabaseProjectUrl(parsed.data.SUPABASE_URL) };
+  return cached;
+}
+
+function supabaseProjectUrl(raw: string) {
+  try {
+    return new URL(raw.trim()).origin;
+  } catch {
+    return raw.trim().replace(/\/+$/, "");
+  }
 }
 
 export function isDemoModeEnabled(): boolean {

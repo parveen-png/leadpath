@@ -2,41 +2,20 @@
 
 import { redirect } from "next/navigation";
 
+import { secretsEqual } from "@/lib/encryption/crypto";
 import { createUserClient } from "@/lib/database/user";
+import { APP_PASSCODE, clearPasscodeSession, grantPasscodeSession } from "@/server/passcode";
 import { allowRequest, recordActivity, requireWorkspace } from "@/server/session";
 
 export async function signIn(formData: FormData) {
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  if (!email || password.length < 8) return { error: "Enter the email and password for this workspace." };
-  const supabase = await createUserClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) return { error: "Those sign-in details were not recognized." };
-  redirect("/");
-}
-
-export async function signUp(formData: FormData) {
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  const fullName = String(formData.get("fullName") ?? "").trim();
-  const workspaceName = String(formData.get("workspaceName") ?? "").trim();
-  if (!email || password.length < 8 || workspaceName.length < 2) {
-    return { error: "Add your name, a workspace name, and a password of at least 8 characters." };
-  }
-  const supabase = await createUserClient();
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: { data: { full_name: fullName, workspace_name: workspaceName } },
-  });
-  if (error) return { error: "The account could not be created. The email may already be in use." };
-  if (!data.session) {
-    return { message: "Check your email to confirm the account, then sign in." };
-  }
+  const passcode = String(formData.get("passcode") ?? "");
+  if (!secretsEqual(passcode, APP_PASSCODE)) return { error: "That passcode was not recognized." };
+  await grantPasscodeSession();
   redirect("/");
 }
 
 export async function signOut() {
+  await clearPasscodeSession();
   const supabase = await createUserClient();
   await supabase.auth.signOut();
   redirect("/login");

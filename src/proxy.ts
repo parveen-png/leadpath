@@ -1,6 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { PASSCODE_COOKIE, passcodeCookieMatches } from "@/lib/passcode";
+
 const PUBLIC_PREFIXES = ["/login", "/signup", "/api/webhooks", "/api/cron"];
 
 export async function proxy(request: NextRequest) {
@@ -33,13 +35,18 @@ export async function proxy(request: NextRequest) {
   const { data } = await supabase.auth.getUser();
   const pathname = request.nextUrl.pathname;
   const isPublic = PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  const passcode = await passcodeCookieMatches(
+    request.cookies.get(PASSCODE_COOKIE)?.value,
+    process.env.APP_ENCRYPTION_KEY ?? "",
+  );
+  const signedIn = Boolean(data.user) || passcode;
 
-  if (!data.user && !isPublic) {
+  if (!signedIn && !isPublic) {
     const login = request.nextUrl.clone();
     login.pathname = "/login";
     return NextResponse.redirect(login);
   }
-  if (data.user && (pathname === "/login" || pathname === "/signup")) {
+  if (signedIn && (pathname === "/login" || pathname === "/signup")) {
     const home = request.nextUrl.clone();
     home.pathname = "/";
     return NextResponse.redirect(home);

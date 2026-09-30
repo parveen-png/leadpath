@@ -253,6 +253,30 @@ describe("payload and translations", () => {
     expect(result.payload.description).toContain("Working with a realtor?: No");
   });
 
+  it("maps a Facebook answer to source and tags without putting tags on the person", () => {
+    const result = buildFubPayload({
+      values: { form_name: "82 Penbridge", campaign_name: "Oakville Buyers" },
+      mappings: [
+        { sourceKey: "form_name", sourceLabel: "Form Name", sourceGroup: "metadata", destinationApiName: "source", destinationLabel: "Source", transform: { type: "none" }, ignored: false, saveToBackground: false },
+        { sourceKey: "campaign_name", sourceLabel: "Campaign Name", sourceGroup: "marketing", destinationApiName: "tags", destinationLabel: "Tags", transform: { type: "none" }, ignored: false, saveToBackground: false },
+      ],
+      staticValues: [],
+      tags: [{ kind: "static", value: "Facebook" }],
+      rules: [],
+      translations: [],
+      destinations,
+      sourceName: "Facebook",
+      systemName: "Leadpath",
+      eventType: "General Inquiry",
+      campaignSource: "Facebook",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.source).toBe("82 Penbridge");
+    expect(result.payload.person.tags).toBeUndefined();
+    expect(result.tags).toEqual(["Oakville Buyers", "Facebook"]);
+  });
+
   it("stops on an unsafe dropdown value", () => {
     const result = buildFubPayload({
       values: { timeframe: "ASAP!!!" },

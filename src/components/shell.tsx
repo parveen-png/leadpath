@@ -57,7 +57,7 @@ export function AppShell({
         </nav>
         <div className="mt-auto border-t border-white/10 p-4">
           <p className="text-sm font-medium text-white">{name}</p>
-          <p className="truncate text-xs text-stone-400">{email}</p>
+          {email ? <p className="truncate text-xs text-stone-400">{email}</p> : null}
           <p className="mt-2 text-xs text-stone-500">{workspace}</p>
           <form action={signOut} className="mt-3">
             <button className="inline-flex items-center gap-2 text-sm text-stone-300 hover:text-white" type="submit">

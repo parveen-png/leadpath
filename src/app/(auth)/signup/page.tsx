@@ -1,9 +1,5 @@
-import { AuthForm } from "@/features/auth/auth-form";
+import { redirect } from "next/navigation";
 
 export default function SignupPage() {
-  return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <AuthForm mode="signup" />
-    </main>
-  );
+  redirect("/login");
 }
