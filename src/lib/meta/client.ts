@@ -192,7 +192,7 @@ export class MetaClient {
   async listRecentLeads(formId: string, pageToken: string): Promise<MetaLead[]> {
     const data = await this.get<{ data?: unknown[] }>(`${formId}/leads`, pageToken, {
       fields: LEAD_FIELDS,
-      limit: "10",
+      limit: "50",
     });
     return z.array(leadSchema).parse(data.data ?? []);
   }

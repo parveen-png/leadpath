@@ -55,15 +55,31 @@ export async function dashboardData() {
 
 export async function workflowCards() {
   const ctx = await requireWorkspace();
-  const result = await ctx.admin.from("workflows").select("*").eq("workspace_id", ctx.workspaceId).order("updated_at", { ascending: false });
-  const workflows = (result.data ?? []) as Array<Record<string, string | null>>;
-  const cards = [];
-  for (const workflow of workflows) {
-    const leads = await ctx.admin.from("leads").select("status, received_at").eq("workflow_id", workflow.id).eq("is_test", false).eq("is_demo", false);
-    const rows = (leads.data ?? []) as Array<{ status: string; received_at: string }>;
+  const [result, leads] = await Promise.all([
+    ctx.admin
+      .from("workflows")
+      .select("id, name, status, page_name, form_name")
+      .eq("workspace_id", ctx.workspaceId)
+      .order("updated_at", { ascending: false }),
+    ctx.admin
+      .from("leads")
+      .select("workflow_id, status, received_at")
+      .eq("workspace_id", ctx.workspaceId)
+      .eq("is_test", false)
+      .eq("is_demo", false),
+  ]);
+  const byWorkflow = new Map<string, Array<{ status: string; received_at: string }>>();
+  for (const lead of (leads.data ?? []) as Array<{ workflow_id: string | null; status: string; received_at: string }>) {
+    if (!lead.workflow_id) continue;
+    const rows = byWorkflow.get(lead.workflow_id) ?? [];
+    rows.push(lead);
+    byWorkflow.set(lead.workflow_id, rows);
+  }
+  return ((result.data ?? []) as Array<Record<string, string | null>>).map((workflow) => {
+    const rows = byWorkflow.get(String(workflow.id)) ?? [];
     const delivered = rows.filter((row) => row.status === "delivered" || row.status === "delivered_with_warning").length;
     const finished = rows.filter((row) => ["delivered", "delivered_with_warning", "failed"].includes(row.status)).length;
-    cards.push({
+    return {
       id: String(workflow.id),
       name: String(workflow.name),
       pageName: workflow.page_name,
@@ -71,10 +87,9 @@ export async function workflowCards() {
       status: String(workflow.status),
       leads: rows.length,
       success: finished === 0 ? null : Math.round((delivered / finished) * 1000) / 10,
-      lastLead: rows.sort((a, b) => b.received_at.localeCompare(a.received_at))[0]?.received_at ?? null,
-    });
-  }
-  return cards;
+      lastLead: rows.reduce<string | null>((latest, row) => (latest && latest > row.received_at ? latest : row.received_at), null),
+    };
+  });
 }
 
 export async function leadInbox(filters: { status?: string; q?: string; range?: string }) {

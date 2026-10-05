@@ -50,7 +50,7 @@ export async function saveWorkflow(draft: WorkflowDraft) {
   if (!FUB_EVENT_TYPES.includes(draft.eventType as (typeof FUB_EVENT_TYPES)[number]) && draft.eventType !== "General Inquiry") {
     return { ok: false as const, error: "Choose a Follow Up Boss lead type from the list." };
   }
-  await ctx.admin
+  const updated = await ctx.admin
     .from("workflows")
     .update({
       name: draft.name.trim() || "Untitled workflow",
@@ -67,6 +67,7 @@ export async function saveWorkflow(draft: WorkflowDraft) {
     })
     .eq("id", draft.id)
     .eq("workspace_id", ctx.workspaceId);
+  if (updated.error) return { ok: false as const, error: "The workflow could not be saved. Try again in a moment." };
 
   await ctx.admin.from("workflow_mappings").delete().eq("workflow_id", draft.id);
   await ctx.admin.from("workflow_static_values").delete().eq("workflow_id", draft.id);
@@ -75,7 +76,7 @@ export async function saveWorkflow(draft: WorkflowDraft) {
   await ctx.admin.from("workflow_translations").delete().eq("workflow_id", draft.id);
 
   if (draft.mappings.length) {
-    await ctx.admin.from("workflow_mappings").insert(
+    const mappings = await ctx.admin.from("workflow_mappings").insert(
       draft.mappings.map((mapping, index) => ({
         workspace_id: ctx.workspaceId,
         workflow_id: draft.id,
@@ -90,6 +91,7 @@ export async function saveWorkflow(draft: WorkflowDraft) {
         sort_order: index,
       })),
     );
+    if (mappings.error) return { ok: false as const, error: "The field mapping could not be saved. Try again in a moment." };
   }
   if (draft.staticValues.length) {
     await ctx.admin.from("workflow_static_values").insert(
@@ -181,6 +183,10 @@ export async function setWorkflowStatus(id: string, status: "active" | "paused" 
     if (conflicts.blockers.length) return { ok: false as const, error: conflicts.blockers[0] ?? "Another workflow is already active." };
   }
   await ctx.admin.from("workflows").update({ status }).eq("id", id).eq("workspace_id", ctx.workspaceId);
+  if (status === "active" && current.pageId && !isDemoIdentifier(current.pageId)) {
+    const { subscribeMetaPage } = await import("@/server/actions/connections");
+    await subscribeMetaPage(current.pageId);
+  }
   await recordActivity(ctx.admin, {
     workspaceId: ctx.workspaceId,
     actorId: ctx.userId,
@@ -266,7 +272,7 @@ export async function listPageChoices() {
   return pages;
 }
 
-export async function listFormChoices(pageId: string) {
+export async function listFormChoices(pageId: string, refresh = false) {
   const ctx = await requireWorkspace();
   if (isDemoIdentifier(pageId)) {
     return demoForms.filter((form) => form.pageId === pageId).map((form) => ({
@@ -278,21 +284,28 @@ export async function listFormChoices(pageId: string) {
       isDemo: true,
     }));
   }
-  const cached = await ctx.admin.from("meta_forms").select("*").eq("workspace_id", ctx.workspaceId).eq("page_id", pageId);
-  const forms = ((cached.data ?? []) as Array<Record<string, string | number | null>>).map((form) => ({
-    id: String(form.form_id),
-    name: String(form.name),
-    status: form.status ? String(form.status) : undefined,
-    updatedAt: form.meta_updated_time ? String(form.meta_updated_time) : undefined,
-    fieldCount: Number(form.field_count ?? 0),
-    isDemo: false,
-  }));
-  if (forms.length > 0) return forms;
+  if (!refresh) {
+    const cached = await ctx.admin.from("meta_forms").select("form_id, name, status, meta_updated_time, field_count").eq("workspace_id", ctx.workspaceId).eq("page_id", pageId);
+    const forms = ((cached.data ?? []) as Array<Record<string, string | number | null>>).map((form) => ({
+      id: String(form.form_id),
+      name: String(form.name),
+      status: form.status ? String(form.status) : undefined,
+      updatedAt: form.meta_updated_time ? String(form.meta_updated_time) : undefined,
+      fieldCount: Number(form.field_count ?? 0),
+      isDemo: false,
+    }));
+    if (forms.length > 0) return forms;
+  }
   const meta = await resolveMetaAccess(ctx.admin, ctx.workspaceId, ctx.metaGraphVersion);
   const token = await pageAccessToken(ctx.admin, ctx.workspaceId, pageId);
   if (!token) return [];
   const client = new MetaClient({ version: meta.graphVersion });
   const remote = await client.listForms(pageId, token);
+  if (!remote.length) {
+    await ctx.admin.from("meta_forms").delete().eq("workspace_id", ctx.workspaceId).eq("page_id", pageId);
+    return [];
+  }
+  await rememberForms(ctx.admin, ctx.workspaceId, pageId, remote);
   return remote.map((form) => ({
     id: form.id,
     name: form.name,
@@ -301,6 +314,49 @@ export async function listFormChoices(pageId: string) {
     fieldCount: form.questions?.length ?? 0,
     isDemo: false,
   }));
+}
+
+async function rememberForms(
+  admin: Awaited<ReturnType<typeof requireWorkspace>>["admin"],
+  workspaceId: string,
+  pageId: string,
+  forms: Array<{ id: string; name: string; status?: string; created_time?: string; questions?: Array<{ key: string; label?: string; type?: string; options?: unknown[] }> }>,
+) {
+  if (!forms.length) return;
+  for (let index = 0; index < forms.length; index += 200) {
+    const batch = forms.slice(index, index + 200);
+    await admin.from("meta_forms").upsert(
+      batch.map((form) => ({
+        workspace_id: workspaceId,
+        page_id: pageId,
+        form_id: form.id,
+        name: form.name,
+        status: form.status ?? null,
+        field_count: form.questions?.length ?? 0,
+        meta_updated_time: form.created_time ?? null,
+        is_demo: false,
+      })),
+      { onConflict: "workspace_id,form_id" },
+    );
+  }
+  const ids = forms.map((form) => form.id);
+  for (let index = 0; index < ids.length; index += 80) {
+    await admin.from("meta_form_fields").delete().eq("workspace_id", workspaceId).in("form_id", ids.slice(index, index + 80));
+  }
+  const fields = forms.flatMap((form) =>
+    (form.questions ?? []).map((question, index) => ({
+      workspace_id: workspaceId,
+      form_id: form.id,
+      field_key: question.key,
+      label: question.label || question.key,
+      field_type: question.type ?? null,
+      options: question.options ?? [],
+      sort_order: index,
+    })),
+  );
+  for (let index = 0; index < fields.length; index += 400) {
+    await admin.from("meta_form_fields").insert(fields.slice(index, index + 400));
+  }
 }
 
 export async function loadFormSourceFields(pageId: string, formId: string): Promise<SourceField[]> {

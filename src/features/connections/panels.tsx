@@ -90,7 +90,7 @@ function MetaCard({
         <Button type="button" variant="secondary" onClick={async () => {
           const test = await testMetaConnection();
           if (test.ok) {
-            setResult(`Facebook connected successfully. ${test.pageCount} Pages available. ${test.formCount} lead forms found.`);
+            setResult(`Facebook connected successfully. ${test.pageCount} Pages available. ${test.formCount} lead forms found.${test.partial ? " Remaining forms load when you pick a Page in a workflow." : ""}`);
             setTechnical(null);
           } else {
             setResult(test.friendly);
@@ -104,6 +104,8 @@ function MetaCard({
         ><Button type="submit" variant="ghost">Remove Connection</Button></form>
       </div>
       {result ? <p className="rounded-2xl bg-paper px-3 py-3 text-sm">{result}</p> : null}
+      {connection?.status === "error" && connection.lastError ? <p className="rounded-2xl bg-warn-soft px-3 py-3 text-sm text-warn">{connection.lastError}</p> : null}
+      {!config.maskedAppSecret ? <p className="rounded-2xl bg-warn-soft px-3 py-3 text-sm text-warn">Save the Meta app secret, then turn on lead notifications for the Page that runs the ads. Without that, Facebook cannot notify Leadpath when a lead arrives.</p> : null}
       <p className="text-xs text-muted">Webhook address: {webhookUrl}</p>
       <div className="space-y-2">
         {pages.map((page) => (

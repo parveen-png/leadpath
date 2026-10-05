@@ -1,8 +1,11 @@
 import Link from "next/link";
 
+export const maxDuration = 60;
+
 import { Badge, statusLabel, statusTone } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { leadInbox } from "@/server/queries";
+import { importRecentLeads } from "@/services/leads/pipeline";
 import { formatRelativeTime } from "@/lib/utils";
 
 export default async function LeadsPage({
@@ -11,6 +14,7 @@ export default async function LeadsPage({
   searchParams: Promise<{ status?: string; q?: string; range?: string }>;
 }) {
   const filters = await searchParams;
+  const sync = await importRecentLeads();
   const { leads, names } = await leadInbox(filters);
   const statuses = ["all", "delivered", "failed", "retrying", "delivered_with_warning"];
   return (
@@ -19,6 +23,8 @@ export default async function LeadsPage({
         <h1 className="font-serif text-4xl">Leads</h1>
         <p className="mt-2 text-sm text-muted">Every Facebook lead and whether Follow Up Boss accepted it.</p>
       </div>
+      {sync.message ? <p className="rounded-2xl bg-warn-soft px-4 py-3 text-sm text-warn">{sync.message}</p> : null}
+      {sync.imported > 0 ? <p className="rounded-2xl bg-forest-soft px-4 py-3 text-sm">{sync.imported} new Facebook {sync.imported === 1 ? "lead was" : "leads were"} brought in and sent toward Follow Up Boss.</p> : null}
       <form className="flex flex-wrap gap-2">
         <Input name="q" defaultValue={filters.q} placeholder="Search name, email, phone, or ID" aria-label="Search leads" className="max-w-sm" />
         <select name="status" defaultValue={filters.status ?? "all"} className="h-11 rounded-2xl border border-line bg-white px-3 text-sm" aria-label="Status">

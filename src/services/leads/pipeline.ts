@@ -20,8 +20,9 @@ import {
   pageAccessToken,
   resolveFubAccess,
   resolveMetaAccess,
+  saveConnection,
 } from "@/services/connections/store";
-import { recordActivity } from "@/server/session";
+import { recordActivity, requireWorkspace } from "@/server/session";
 import type {
   DestinationField,
   FieldMapping,
@@ -205,6 +206,78 @@ async function receiveNotice(admin: AdminClient, notice: LeadgenNotice, correlat
     next_run_at: new Date().toISOString(),
   });
   logger.info("Queued Facebook lead", { correlationId, leadId, metaLeadId: notice.leadgenId });
+}
+
+const RECENT_LEAD_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+export async function importRecentLeads(): Promise<{ imported: number; message: string | null }> {
+  const ctx = await requireWorkspace();
+  const meta = await resolveMetaAccess(ctx.admin, ctx.workspaceId, ctx.metaGraphVersion);
+  if (!meta.userAccessToken) {
+    return { imported: 0, message: "Add a Facebook access token on Connections before leads can come in." };
+  }
+  const workflows = await ctx.admin
+    .from("workflows")
+    .select("page_id, form_id, form_scope, is_demo")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("status", "active");
+  const active = ((workflows.data ?? []) as Array<{ page_id: string | null; form_id: string | null; form_scope: string; is_demo: boolean }>).filter(
+    (workflow) => workflow.page_id && workflow.form_id && workflow.form_scope !== "any" && !workflow.is_demo && !isDemoIdentifier(workflow.page_id),
+  );
+  if (!active.length) return { imported: 0, message: null };
+  const client = new MetaClient({ version: meta.graphVersion });
+  const since = Date.now() - RECENT_LEAD_WINDOW_MS;
+  let imported = 0;
+  for (const workflow of active) {
+    const token = (await pageAccessToken(ctx.admin, ctx.workspaceId, workflow.page_id!)) || meta.userAccessToken;
+    let leads;
+    try {
+      leads = await client.listRecentLeads(workflow.form_id!, token);
+    } catch (error) {
+      const explained = metaErrorMessage(error);
+      const expired = explained.technical.includes("code 190") || /expired/i.test(explained.technical);
+      if (expired) {
+        await saveConnection(ctx.admin, {
+          workspaceId: ctx.workspaceId,
+          provider: "meta",
+          status: "error",
+          lastError: "The Facebook access token expired, so new leads could not be read.",
+          tested: true,
+        });
+        return {
+          imported,
+          message: "The Facebook access token expired, so these leads never reached Leadpath. Paste a new token on Connections. Opening Leads after that brings in leads from the last 3 days.",
+        };
+      }
+      return { imported, message: explained.friendly };
+    }
+    for (const lead of leads) {
+      const created = lead.created_time ? Date.parse(lead.created_time) : 0;
+      if (!created || created < since) continue;
+      const existing = await ctx.admin
+        .from("leads")
+        .select("id")
+        .eq("workspace_id", ctx.workspaceId)
+        .eq("meta_lead_id", lead.id)
+        .maybeSingle();
+      if (existing.data) continue;
+      await receiveNotice(
+        ctx.admin,
+        {
+          leadgenId: lead.id,
+          pageId: workflow.page_id!,
+          formId: lead.form_id ?? workflow.form_id!,
+          adId: lead.ad_id,
+          adgroupId: lead.adset_id,
+          createdTime: lead.created_time,
+        },
+        createCorrelationId(),
+      );
+      imported += 1;
+    }
+  }
+  await processDueJobs(25);
+  return { imported, message: null };
 }
 
 export async function processDueJobs(limit = 8): Promise<number> {

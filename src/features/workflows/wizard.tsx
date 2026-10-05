@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Combobox } from "@/components/combobox";
@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { suggestMappings } from "@/services/mapping/automap";
+import { sourceFieldsForQuestions } from "@/services/mapping/sources";
 import { demoSampleValues } from "@/services/demo/fixtures";
 import {
   destinationCatalog,
@@ -25,6 +26,16 @@ import { FUB_EVENT_TYPES, TRANSFORM_OPTIONS } from "@/types/domain";
 import type { WorkflowDraft } from "@/types/workflow";
 
 const steps = ["Trigger", "Map Fields", "Tags & Rules", "Test", "Activate"];
+
+const quickDestinations = [
+  ["firstName", "First name"],
+  ["lastName", "Last name"],
+  ["emails", "Email"],
+  ["phones", "Phone"],
+  ["message", "Message"],
+  ["source", "Source"],
+  ["tags", "Tags"],
+] as const;
 
 type FormChoice = { id: string; name: string; status?: string; updatedAt?: string; fieldCount: number; isDemo: boolean };
 
@@ -51,43 +62,83 @@ export function WorkflowWizard({
   const [busy, setBusy] = useState(false);
   const [translateFor, setTranslateFor] = useState<string | null>(null);
   const [confirmTest, setConfirmTest] = useState(false);
+  const [formStatus, setFormStatus] = useState<string | null>(null);
 
   const mappedCount = draft.mappings.filter((mapping) => mapping.destinationApiName && !mapping.ignored).length;
   const unmappedCount = draft.mappings.filter((mapping) => !mapping.destinationApiName && !mapping.ignored && !mapping.saveToBackground).length;
   const contactWarning = !draft.mappings.some((mapping) => ["name", "firstName", "lastName", "emails", "phones"].includes(mapping.destinationApiName ?? ""));
 
+  useEffect(() => {
+    if (initial.pageId) void loadForms(initial.pageId);
+    // The saved page should load its forms once, without clearing the form already chosen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial.pageId]);
+
+  async function loadForms(pageId: string, refresh = false) {
+    setFormStatus("Loading forms…");
+    try {
+      const choices = await listFormChoices(pageId, refresh);
+      setFormChoices(choices);
+      setFormStatus(choices.length ? null : "No lead forms were found on this Page.");
+    } catch {
+      setFormChoices([]);
+      setFormStatus("Those forms could not be loaded. Try Refresh Forms.");
+    }
+  }
+
   async function choosePage(pageId: string) {
     const page = pages.find((item) => item.id === pageId);
-    setDraft((current) => ({ ...current, pageId, pageName: page?.name ?? null, isDemo: Boolean(page?.isDemo), formId: null, formName: null }));
-    setFormChoices(await listFormChoices(pageId));
+    setDraft((current) => ({ ...current, pageId, pageName: page?.name ?? null, isDemo: Boolean(page?.isDemo), formId: null, formName: null, formScope: "specific" }));
+    await loadForms(pageId);
   }
 
   async function chooseForm(formId: string) {
     if (!draft.pageId) return;
-    if (formId === "any") {
-      setDraft((current) => ({ ...current, formScope: "any", formId: null, formName: "Any form" }));
+    setFormStatus(formId === "any" ? null : "Loading form fields…");
+    let nextFields: SourceField[];
+    try {
+      nextFields = formId === "any" ? sourceFieldsForQuestions([]) : await loadFormSourceFields(draft.pageId, formId);
+    } catch {
+      setFormStatus("The form fields could not be loaded. Try that form again.");
       return;
     }
     const form = formChoices.find((item) => item.id === formId);
-    const nextFields = await loadFormSourceFields(draft.pageId, formId);
     const suggested = suggestMappings(nextFields, fieldCatalog);
     setSources(nextFields);
     setDraft((current) => ({
       ...current,
-      formScope: "specific",
-      formId,
-      formName: form?.name ?? null,
+      formScope: formId === "any" ? "any" : "specific",
+      formId: formId === "any" ? null : formId,
+      formName: formId === "any" ? "Any form" : form?.name ?? null,
       isDemo: Boolean(form?.isDemo || current.isDemo),
       mappings: suggested.mappings,
+      tags: current.tags.length
+        ? current.tags
+        : [
+            { kind: "static", value: "Facebook" },
+            { kind: "dynamic", value: "form_name" },
+          ],
     }));
-    setMessage(suggested.suggestions[0] ? `Suggested: ${suggested.suggestions[0].sourceLabel} → ${suggested.suggestions[0].destination.label}` : null);
+    setFormStatus(null);
+    const matched = suggested.mappings.filter((mapping) => mapping.destinationApiName).length;
+    const addedTags = draft.tags.length === 0;
+    setMessage(
+      matched
+        ? `Suggested: ${matched} fields matched.${addedTags ? " Facebook and the form name are added as tags." : ""}`
+        : "Suggested: choose where each answer should go. The main fields are one click.",
+    );
   }
 
   function updateMapping(sourceKey: string, patch: Partial<FieldMapping>) {
-    setDraft((current) => ({
-      ...current,
-      mappings: current.mappings.map((mapping) => (mapping.sourceKey === sourceKey ? { ...mapping, ...patch } : mapping)),
-    }));
+    setDraft((current) => {
+      const exists = current.mappings.some((mapping) => mapping.sourceKey === sourceKey);
+      return {
+        ...current,
+        mappings: exists
+          ? current.mappings.map((mapping) => (mapping.sourceKey === sourceKey ? { ...mapping, ...patch } : mapping))
+          : [...current.mappings, { ...blankMapping({ key: sourceKey, label: patch.sourceLabel ?? sourceKey, group: patch.sourceGroup ?? "question" }), ...patch }],
+      };
+    });
   }
 
   async function persist() {
@@ -197,6 +248,7 @@ export function WorkflowWizard({
             options={[{ value: "any", label: "Any form on this Page" }, ...formChoices.map((form) => ({ value: form.id, label: form.name, hint: form.isDemo ? "Demo Data" : form.status }))]}
             onChange={(value) => void chooseForm(value)}
           />
+          {formStatus ? <p className="text-sm text-muted">{formStatus}</p> : null}
           {selectedForm ? (
             <div className="grid gap-3 rounded-2xl bg-paper p-4 text-sm sm:grid-cols-4">
               <Meta label="Form name" value={selectedForm.name} />
@@ -205,7 +257,7 @@ export function WorkflowWizard({
               <Meta label="Number of fields" value={String(selectedForm.fieldCount)} />
             </div>
           ) : null}
-          <Button type="button" variant="secondary" onClick={() => draft.pageId && void choosePage(draft.pageId)}>Refresh Forms</Button>
+          <Button type="button" variant="secondary" disabled={!draft.pageId || formStatus === "Loading forms…"} onClick={() => draft.pageId && void loadForms(draft.pageId, true)}>Refresh Forms</Button>
         </Card>
       ) : null}
 
@@ -235,10 +287,34 @@ export function WorkflowWizard({
                         </div>
                         <span className="hidden text-muted md:block">→</span>
                         <div className="space-y-2">
+                          <div className="flex flex-wrap gap-1.5">
+                            {quickDestinations.map(([apiName, label]) => {
+                              const selected = mapping.destinationApiName === apiName;
+                              return (
+                                <button
+                                  key={apiName}
+                                  type="button"
+                                  className={selected ? "rounded-full bg-forest px-2.5 py-1 text-xs text-white" : "rounded-full border border-line bg-white px-2.5 py-1 text-xs"}
+                                  onClick={() => {
+                                    const destination = fieldCatalog.find((item) => item.apiName === apiName);
+                                    updateMapping(field.key, {
+                                      ...mapping,
+                                      destinationApiName: selected ? null : apiName,
+                                      destinationLabel: selected ? null : destination?.label ?? label,
+                                      transform: selected ? { type: "none" } : apiName === "phones" ? { type: "phone" } : { type: "none" },
+                                      ignored: false,
+                                    });
+                                  }}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
                           <Combobox
-                            label="Follow Up Boss"
-                            placeholder="Search Follow Up Boss fields"
-                            value={mapping.destinationApiName ?? ""}
+                            label="Other Follow Up Boss field"
+                            placeholder="Search custom fields"
+                            value={quickDestinations.some(([apiName]) => apiName === mapping.destinationApiName) ? "__quick__" : mapping.destinationApiName ?? ""}
                             options={[{ value: "", label: "Leave unmapped" }, ...destinationOptions]}
                             onChange={(value) => {
                               const destination = fieldCatalog.find((item) => item.apiName === value);
@@ -250,26 +326,29 @@ export function WorkflowWizard({
                               });
                             }}
                           />
-                          <div className="flex flex-wrap gap-2">
-                            <select
-                              className="h-9 rounded-full border border-line bg-white px-3 text-xs"
-                              value={mapping.transform.type}
-                              aria-label={`Transform ${field.label}`}
-                              onChange={(event) => updateMapping(field.key, { ...mapping, transform: transformFrom(event.target.value, mapping.transform) })}
-                            >
-                              {TRANSFORM_OPTIONS.map((option) => (
-                                <option key={option.type} value={option.type}>{option.label}</option>
-                              ))}
-                            </select>
-                            <TransformExtra mapping={mapping} onChange={(transform) => updateMapping(field.key, { ...mapping, transform })} />
-                            <Button type="button" size="sm" variant="ghost" onClick={() => updateMapping(field.key, { ...mapping, ignored: !mapping.ignored, destinationApiName: null })}>Ignore this field</Button>
-                            <Button type="button" size="sm" variant="ghost" onClick={() => updateMapping(field.key, { ...mapping, saveToBackground: !mapping.saveToBackground })}>
-                              {mapping.saveToBackground ? "Saving to lead note" : "Save answer to lead note"}
-                            </Button>
-                            {fieldCatalog.find((item) => item.apiName === mapping.destinationApiName)?.choices.length ? (
-                              <Button type="button" size="sm" variant="secondary" onClick={() => setTranslateFor(mapping.destinationApiName)}>Translate values</Button>
-                            ) : null}
-                          </div>
+                          <details className="text-xs text-muted">
+                            <summary className="cursor-pointer">Adjust this field</summary>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <select
+                                className="h-9 rounded-full border border-line bg-white px-3 text-xs"
+                                value={mapping.transform.type}
+                                aria-label={`Transform ${field.label}`}
+                                onChange={(event) => updateMapping(field.key, { ...mapping, transform: transformFrom(event.target.value, mapping.transform) })}
+                              >
+                                {TRANSFORM_OPTIONS.map((option) => (
+                                  <option key={option.type} value={option.type}>{option.label}</option>
+                                ))}
+                              </select>
+                              <TransformExtra mapping={mapping} onChange={(transform) => updateMapping(field.key, { ...mapping, transform })} />
+                              <Button type="button" size="sm" variant="ghost" onClick={() => updateMapping(field.key, { ...mapping, ignored: !mapping.ignored, destinationApiName: null })}>Ignore this field</Button>
+                              <Button type="button" size="sm" variant="ghost" onClick={() => updateMapping(field.key, { ...mapping, saveToBackground: !mapping.saveToBackground })}>
+                                {mapping.saveToBackground ? "Saving to lead note" : "Save answer to lead note"}
+                              </Button>
+                              {fieldCatalog.find((item) => item.apiName === mapping.destinationApiName)?.choices.length ? (
+                                <Button type="button" size="sm" variant="secondary" onClick={() => setTranslateFor(mapping.destinationApiName)}>Translate values</Button>
+                              ) : null}
+                            </div>
+                          </details>
                         </div>
                       </div>
                     );

@@ -82,12 +82,24 @@ export async function testMetaConnection() {
     return result;
   }
   await replacePages(ctx, result.pages);
-  let formCount = 0;
-  for (const page of result.pages.slice(0, 15)) {
-    const forms = await client.listForms(page.id, page.access_token || meta.userAccessToken);
-    formCount += forms.length;
-    await replaceForms(ctx.workspaceId, page.id, forms);
-  }
+  const deadline = Date.now() + 20_000;
+  let skipped = 0;
+  const formCounts = await mapLimit(result.pages, 4, async (page) => {
+    if (Date.now() > deadline) {
+      skipped += 1;
+      return 0;
+    }
+    const token = page.access_token || meta.userAccessToken;
+    if (!token) return 0;
+    try {
+      const forms = await client.listForms(page.id, token);
+      await replaceForms(ctx.workspaceId, page.id, forms);
+      return forms.length;
+    } catch {
+      return 0;
+    }
+  });
+  const formCount = formCounts.reduce((total, count) => total + count, 0);
   await saveConnection(ctx.admin, {
     workspaceId: ctx.workspaceId,
     provider: "meta",
@@ -109,7 +121,7 @@ export async function testMetaConnection() {
     action: "connection.tested",
     summary: "Facebook connection was tested.",
   });
-  return { ok: true as const, accountName: result.accountName, pageCount: result.pages.length, formCount, pages: result.pages.map((page) => ({ id: page.id, name: page.name })) };
+  return { ok: true as const, accountName: result.accountName, pageCount: result.pages.length, formCount, partial: skipped > 0, pages: result.pages.map((page) => ({ id: page.id, name: page.name })) };
 }
 
 export async function subscribeMetaPage(pageId: string) {
@@ -304,6 +316,22 @@ function webhookUrl() {
   return base ? `${base}/api/webhooks/meta` : "/api/webhooks/meta";
 }
 
+async function mapLimit<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  async function run() {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      const item = items[index];
+      if (item === undefined) return;
+      results[index] = await worker(item);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => run()));
+  return results;
+}
+
 async function replacePages(
   ctx: Awaited<ReturnType<typeof requireWorkspace>>,
   pages: Array<{ id: string; name: string; access_token?: string; category?: string }>,
@@ -328,11 +356,13 @@ async function replaceForms(
   pageId: string,
   forms: Array<{ id: string; name: string; status?: string; created_time?: string; questions?: Array<{ key: string; label?: string; type?: string; options?: unknown[] }> }>,
 ) {
+  if (!forms.length) return;
   const { createAdminClient } = await import("@/lib/database/admin");
   const admin = createAdminClient();
-  for (const form of forms) {
+  for (let index = 0; index < forms.length; index += 200) {
+    const batch = forms.slice(index, index + 200);
     await admin.from("meta_forms").upsert(
-      {
+      batch.map((form) => ({
         workspace_id: workspaceId,
         page_id: pageId,
         form_id: form.id,
@@ -341,23 +371,27 @@ async function replaceForms(
         field_count: form.questions?.length ?? 0,
         meta_updated_time: form.created_time ?? null,
         is_demo: false,
-      },
+      })),
       { onConflict: "workspace_id,form_id" },
     );
-    await admin.from("meta_form_fields").delete().eq("workspace_id", workspaceId).eq("form_id", form.id);
-    if (form.questions?.length) {
-      await admin.from("meta_form_fields").insert(
-        form.questions.map((question, index) => ({
-          workspace_id: workspaceId,
-          form_id: form.id,
-          field_key: question.key,
-          label: question.label || question.key,
-          field_type: question.type ?? null,
-          options: question.options ?? [],
-          sort_order: index,
-        })),
-      );
-    }
+  }
+  const ids = forms.map((form) => form.id);
+  for (let index = 0; index < ids.length; index += 80) {
+    await admin.from("meta_form_fields").delete().eq("workspace_id", workspaceId).in("form_id", ids.slice(index, index + 80));
+  }
+  const fields = forms.flatMap((form) =>
+    (form.questions ?? []).map((question, index) => ({
+      workspace_id: workspaceId,
+      form_id: form.id,
+      field_key: question.key,
+      label: question.label || question.key,
+      field_type: question.type ?? null,
+      options: question.options ?? [],
+      sort_order: index,
+    })),
+  );
+  for (let index = 0; index < fields.length; index += 400) {
+    await admin.from("meta_form_fields").insert(fields.slice(index, index + 400));
   }
 }
 
